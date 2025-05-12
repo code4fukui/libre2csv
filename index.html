@@ -1,0 +1,180 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" href="data:">
+<title>libre2csv - 血糖値グラフ画像データをCSVデータに変換 for iPhone 13 Pro</title>
+<style>
+body {
+  font-family: sans-serif;
+}
+.description {
+  margin: .8em 0;
+  font-weight: bold;
+}
+canvas {
+  border: 1px solid #ccc;
+  width: 95vw;
+}
+</style>
+</head>
+<body>
+<h1>libre2csv</h1>
+<div class=description>血糖値グラフ画像データをCSVデータに変換 for iPhone 13 Pro</div>
+<input type="file" id="imageInput" accept="image/*">
+<br><br>
+<div class=result>
+最高血糖値: <span id=spanmax>-</span>mg/dL (<span id=spanmaxt>--:--</span>)<br>
+最低血糖値: <span id=spanmin>-</span>mg/dL (<span id=spanmint>--:--</span>)<br>
+平均血糖値: <span id=spanave>-</span>mg/dL<br>
+</div>
+<br>
+<button id="btn">CSVデータダウンロード</button><br>
+<br>
+<canvas id="canvas"></canvas>
+
+<hr>
+<a href=https://github.com/code4fukui/libre2csv/>src on GitHub</a>
+
+<script type="module">
+import { CSV } from "https://js.sabae.cc/CSV.js";
+
+const canvas = document.getElementById("canvas");
+const g = canvas.getContext("2d");
+let imageData;
+let result;
+
+const showData = (res) => {
+  let min = 1000;
+  let max = 0;
+  let mint = null;
+  let maxt = null;
+  let sum = 0;
+  for (const i of res) {
+    if (i.value < min) {
+      min = i.value;
+      mint = i.time;
+    }
+    if (i.value > max) {
+      max = i.value;
+      maxt = i.time;
+    }
+    sum += i.value;
+  }
+  const ave = (sum / res.length).toFixed(0);
+  spanave.textContent = ave;
+  spanmin.textContent = min;
+  spanmax.textContent = max;
+  spanmint.textContent = mint;
+  spanmaxt.textContent = maxt;
+};
+
+imageInput.onchange = (e) => {
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    g.drawImage(img, 0, 0);
+    imageData = g.getImageData(0, 0, canvas.width, canvas.height);
+    const res = getGraphData();
+    showData(res);
+    result = res;
+  };
+  img.src = URL.createObjectURL(e.target.files[0]);
+};
+
+btn.onclick = () => {
+  if (result) {
+    downloadCSV(result);
+  }
+};
+
+function getGraphData() {
+  // x: 138px - 1110px (972px - 24時間, 0.675px/分)
+  // y: 456px - 350mg/dL, 1886px - 0mg/dL, 1683px - 50mg/dL
+  //     1226px = 300mg/dL, 50mg/dL
+  const y50 = 1683;
+  const y350 = 456;
+  
+  const { width, height, data } = imageData;
+  const res = [];
+  const minx = 138;
+  const maxx = 1110;
+  const miny = 364;
+  const maxy = 1810;
+
+  const stepx = 2;
+
+  const isHit = (data, x, y) => {
+    const i = (y * width + x) * 4;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    if (r < 10 && g < 10 && b < 10) return true;
+    if (r > 230 && g < 40 && b < 40) return true;
+    return false;
+  }
+  for (let x = minx; x <= maxx; x += stepx) {
+    let v1 = null;
+    let v2 = null;
+    for (let y = miny; y <= maxy; y++) {
+      if (isHit(data, x, y)) {
+        v1 = (350 - 50) / (y350 - y50) * (y - y50) + 50;
+        break;
+      }
+    }
+    for (let y = maxy; y >= miny; y--) {
+      if (isHit(data, x, y)) {
+        v2 = (350 - 50) / (y350 - y50) * (y - y50) + 50;
+        break;
+      }
+    }
+
+    if (v1 != null && v2 != null) {
+      const dv = v1 - v2;
+      const value = (v1 + v2) / 2;
+      const min = (24 * 60) / (maxx - minx) * (x - minx);
+      res.push({ min: min, value, v1, v2, dv });
+    }
+  }
+  // debug show
+  let bkpos = null;
+  g.strokeStyle = "lightblue";
+  g.lineWidth = 2;
+  g.beginPath();
+  for (const item of res) {
+    const x = item.min * (maxx - minx) / (24 * 60) + minx;
+    const y = (item.value - 50) * (y350 - y50) / (350 - 50) + y50;
+    if (!bkpos) {
+      g.moveTo(x, y);
+    } else {
+      g.lineTo(x, y);
+    }
+    bkpos = { x, y };
+  }
+  g.stroke();
+  console.log(res);
+
+  const res2 = res.map(i => {
+    const hour = Math.floor(i.min / 60);
+    const min = Math.floor(i.min - hour * 60) % 60;
+    const sec = Math.floor(i.min * 60) % 60;
+    const fix = (n) => n < 10 ? "0" + n : "" + n;
+    const time = fix(hour) + ":" + fix(min) + ":" + fix(sec);
+    return {
+      time,
+      value: Math.floor(i.value),
+    };
+  });
+  console.log(res2);
+  return res2;
+}
+
+const downloadCSV = (array) => {
+  const csv = CSV.stringify(array);
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "glucose_data.csv";
+  link.click();
+};
+</script>
+</body>
+</html>
